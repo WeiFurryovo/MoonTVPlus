@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
-import { isValidUrlForProxy } from '@/lib/utils';
+import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 
 export const runtime = 'nodejs';
+
+export const maxDuration = 60; // 设置最大执行时间为 60 秒
 
 /**
  * M3U8 代理接口
@@ -36,8 +38,9 @@ export async function GET(request: NextRequest) {
     }
 
     const DIRECT_PLAY_SOURCE = 'directplay';
-    // 安全校验：防 SSRF，只允许合法的公网 URL
-    if (source === DIRECT_PLAY_SOURCE && !isValidUrlForProxy(m3u8Url)) {
+    // 安全校验：防 SSRF / 域名重绑定，只允许合法的公网 URL。对所有经过 proxy-m3u8 的请求强制校验，不仅限于 directplay
+    const isSafeUrl = await validateProxyUrlServerSide(m3u8Url);
+    if (!isSafeUrl) {
       return NextResponse.json(
         { error: 'Proxy request to local or invalid network is forbidden' },
         { status: 403 }
@@ -102,7 +105,7 @@ export async function GET(request: NextRequest) {
     );
 
     if (!isTextType) {
-      if (source === 'directplay') {
+      if (source === DIRECT_PLAY_SOURCE) {
         console.log(`[Proxy-M3U8] 检测到非文本媒体流 (Content-Type: ${contentType}), 针对 directplay 直链代理模式，直接透传二进制流, URL: ${m3u8Url}`);
         // 构造一个新的 Response 对象用于二进制直接透传，确保包含了支持跨域的 header
         const newHeaders = new Headers(response.headers);
@@ -189,7 +192,10 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * 默认去广告规则
+ * 默认去广告规则（服务端版本）
+ * 注意：前端 page.tsx 中的 filterAdsFromM3U8 是客户端侧的去广告逻辑（用于直连模式下由 HLS.js 的自定义 loader 拦截）。
+ * 本函数用于代理模式下，在服务端对 m3u8 内容进行去广告处理后再返回给客户端。
+ * 两套逻辑需要保持同步更新。
  */
 function filterAdsFromM3U8Default(type: string, m3u8Content: string): string {
   if (!m3u8Content) return '';
@@ -245,7 +251,10 @@ function filterAdsFromM3U8Default(type: string, m3u8Content: string): string {
 }
 
 /**
- * 将 m3u8 中的相对链接转换为绝对链接，并将子 m3u8 链接转为代理链接
+ * 将 m3u8 中的相对链接转换为绝对链接，并将子 m3u8 链接转为代理链接。
+ * 此函数仅在代理模式下由服务端调用。
+ * - 子 m3u8 链接 → 指向 /api/proxy-m3u8（递归代理）
+ * - ts 分片/密钥 → directplay 模式指向 /api/proxy/vod/segment（解决 CORS）
  */
 function resolveM3u8Links(m3u8Content: string, baseUrl: string, source: string, proxyOrigin: string, token: string): string {
   const lines = m3u8Content.split('\n');

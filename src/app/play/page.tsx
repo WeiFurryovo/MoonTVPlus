@@ -1452,6 +1452,13 @@ function PlayPageClient() {
       if (isDirectplayDomainProxied(episodeUrl)) {
         const tokenParam = proxyToken ? `&token=${encodeURIComponent(proxyToken)}` : '';
         episodeUrl = `/api/proxy-m3u8?url=${encodeURIComponent(episodeUrl)}&source=directplay${tokenParam}`;
+      } else {
+        // 直链模式且未走代理：跳过 HLS.js 探测。
+        // getVideoResolutionFromM3u8 内部使用 HLS.js (XMLHttpRequest) 加载，
+        // 而 XHR 受 CORS 限制，探测必然失败。实际播放器通过 <video src> 加载不受 CORS 影响。
+        console.log('[视频信息] 直链直连模式，跳过分辨率探测（避免 CORS 误报）');
+        setCurrentSourceVideoInfo(null);
+        return;
       }
     } else if (sourceProxyMode && isM3u8) {
       episodeUrl = `/api/proxy/vod/m3u8?url=${encodeURIComponent(episodeUrl)}&source=${encodeURIComponent(currentSource)}`;
